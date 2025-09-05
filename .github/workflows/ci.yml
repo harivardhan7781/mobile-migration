@@ -1,4 +1,4 @@
-name: CI - Build Docker
+name: CI - Build Docker (diagnostic)
 
 on:
   push:
@@ -13,28 +13,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Optional: speed up Docker builds between runs
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # 1) Show repo layout to confirm paths in the runner
+      - name: Show tree
+        run: |
+          echo "Working directory: $(pwd)"
+          ls -la
+          echo "---- app ----"
+          ls -la app || true
+          echo "---- app/routes ----"
+          ls -la app/routes || true
+          echo "---- show Dockerfile ----"
+          sed -n '1,120p' Dockerfile
 
-      - name: Build Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: false         # CI only builds, does not push
-          tags: demo-api:ci
+      # 2) Build image manually (full logs)
+      - name: Docker build
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          docker version
+          docker build -t demo-api:ci -f Dockerfile .
 
-      # Minimal sanity test: start container and curl /health
-      - name: Run container
+      # 3) Run the container and curl /health
+      - name: Run container & healthcheck
         run: |
           docker run -d --rm -p 8000:8000 --name ci-api demo-api:ci
-          # wait for server
           for i in {1..20}; do
-            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+              echo "Health OK"; exit 0
+            fi
             sleep 1
           done
-          echo "API did not start"; docker logs ci-api; exit 1
+          echo "API did not start"
+          docker logs ci-api || true
+          exit 1
+
       - name: Tear down
         if: always()
         run: docker rm -f ci-api || true
