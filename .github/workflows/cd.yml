@@ -1,49 +1,45 @@
-name: CD - Push to ECR & Refresh ECS
+name: CD - Deploy to ECS
 
 on:
-  workflow_dispatch:    # manual trigger
+  workflow_dispatch: {}             # run manually
   push:
     tags:
-      - 'v*.*.*'        # e.g., v0.1.0
+      - 'v*.*.*'                    # run on version tags like v0.1.0
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write    # for OIDC (preferred)
+      id-token: write               # if you switch to OIDC later
       contents: read
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
-      ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
-      IMAGE_TAG: ${{ github.ref_name }}  # tag name like v0.1.0
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Configure AWS (OIDC)
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Login to ECR
+      - name: Login to Amazon ECR
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, push
+      # Optional: ensure image exists (pull by tag if you use tags)
+      - name: Show image to deploy
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ secrets.ECR_REPOSITORY }}
         run: |
-          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag $ECR_REPOSITORY:$IMAGE_TAG $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "Deploying image: $REGISTRY/$REPO:latest"
 
       - name: Force new ECS deployment
         run: |
           aws ecs update-service \
-            --cluster "$ECS_CLUSTER" \
-            --service "$ECS_SERVICE" \
+            --cluster  "${{ secrets.ECS_CLUSTER }}" \
+            --service  "${{ secrets.ECS_SERVICE }}" \
             --force-new-deployment \
-            --region "$AWS_REGION"
+            --region   "${{ secrets.AWS_REGION }}"
