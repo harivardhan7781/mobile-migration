@@ -1,52 +1,72 @@
-name: CI - Build Docker (diagnostic)
+name: CI - Build, Test, Push to ECR
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 jobs:
-  build:
+  build-test-push:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 1) Show repo layout to confirm paths in the runner
-      - name: Show tree
-        run: |
-          echo "Working directory: $(pwd)"
-          ls -la
-          echo "---- app ----"
-          ls -la app || true
-          echo "---- app/routes ----"
-          ls -la app/routes || true
-          echo "---- show Dockerfile ----"
-          sed -n '1,120p' Dockerfile
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # 2) Build image manually (full logs)
-      - name: Docker build
-        env:
-          DOCKER_BUILDKIT: "1"
+      # Build locally first (tag temp) for healthcheck
+      - name: Build image (local)
         run: |
-          docker version
           docker build -t demo-api:ci -f Dockerfile .
 
-      # 3) Run the container and curl /health
       - name: Run container & healthcheck
         run: |
           docker run -d --rm -p 8000:8000 --name ci-api demo-api:ci
-          for i in {1..20}; do
+          for i in {1..30}; do
             if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
-              echo "Health OK"; exit 0
+              echo "Health OK"; break
             fi
             sleep 1
           done
-          echo "API did not start"
-          docker logs ci-api || true
-          exit 1
-
-      - name: Tear down
+          docker ps
+      - name: Stop container
         if: always()
         run: docker rm -f ci-api || true
+
+      # Configure AWS creds (uses your repo secrets)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Tag and push to ECR (latest + short SHA)
+      - name: Push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA=${IMAGE_SHA::7}
+          docker tag demo-api:ci $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker tag demo-api:ci $ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA
+
+      # Optional: print the pushed image URIs
+      - name: Output image URIs
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA=${IMAGE_SHA::7}
+          echo "Pushed:"
+          echo "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          echo "$ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA"
